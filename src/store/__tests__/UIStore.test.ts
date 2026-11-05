@@ -59,8 +59,8 @@ describe('UIStore', () => {
   });
 
   describe('language', () => {
-    it('should default to en', () => {
-      expect(uiStore.language).toBe('en');
+    it('should default to es (Cianci AI fork)', () => {
+      expect(uiStore.language).toBe('es');
     });
 
     it('should set language correctly', () => {

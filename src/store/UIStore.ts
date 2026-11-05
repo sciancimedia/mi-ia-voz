@@ -38,8 +38,11 @@ export class UIStore {
   colorScheme: 'light' | 'dark' =
     Appearance.getColorScheme() === 'dark' ? 'dark' : 'light';
 
-  // Current selected language (default to English)
-  _language: AvailableLanguage = 'en';
+  // Current selected language. This fork (Cianci AI) defaults to Spanish:
+  // Salvador asked for the app to be born in Spanish. Only fresh installs
+  // see the default — a persisted '_language' from a previous install is
+  // kept as-is and can still be changed in Settings.
+  _language: AvailableLanguage = 'es';
 
   // List of supported languages (derived from locales registry)
   get supportedLanguages(): readonly AvailableLanguage[] {
