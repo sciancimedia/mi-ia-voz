@@ -1,0 +1,241 @@
+name: Build Mi IA Voz (Android)
+
+# Build personal de «Mi IA Voz» a partir de la fuente de PocketPal AI (MIT).
+#
+# Diferencias frente a los workflows oficiales (ci.yml / release.yml):
+#   * Se dispara SOLO a mano (workflow_dispatch). Sin lint/tests ni iOS.
+#   * PLUS_STORE_GATE queda en 'false' de forma explícita: babel.config.js
+#     solo activa la puerta de pago si la variable vale 'true', así que este
+#     build sale SIN menú «PocketPal Plus», SIN pantalla de cobro y con el
+#     manos libres por voz desbloqueado (src/services/plus/gate.ts:
+#     isPlusAvailable()=false, isPlusUnlocked()=true). Es el comportamiento
+#     que el propio proyecto prevé para builds sin tienda (licencia MIT).
+#     OJO: release.yml oficial pone PLUS_STORE_GATE: 'true' — no copiarlo.
+#   * Firma: NO se crea keystore release ni se pasan contraseñas. Según
+#     android/app/build.gradle (signingConfigs/buildTypes.release), sin
+#     APP_RELEASE_STORE_PASSWORD/APP_RELEASE_KEY_PASSWORD el build release
+#     cae a la firma DEBUG. El APK resultante se re-firma después, en local,
+#     con el keystore del propietario usando apksigner (ver LEEME-GITHUB.md).
+#     El keystore real NUNCA se sube a GitHub.
+#
+# La receta base (JDK 17 Temurin, Node 22.21.0 + yarn, google-services.json
+# y .env dummy, allowlist de variantes de llama.rn, Hexagon SDK, ccache y
+# las verificaciones de payload/gate) es la del job build-android de ci.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    env:
+      # Igual que en ci.yml: tiene que venir del entorno porque el
+      # gradle.properties de llama.rn gana al del proyecto raíz.
+      ORG_GRADLE_PROJECT_rnllamaBuildFromSource: 'true'
+      # La puerta de pago de Plus queda APAGADA en este build (ver cabecera).
+      PLUS_STORE_GATE: 'false'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Debe ir antes de setup-node y setup-java: ahí es donde instalan.
+      # El Hexagon SDK añade ~3.1 GB sobre un build desde fuentes.
+      - name: Maximize build space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          df -h /
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22.21.0'
+          cache: 'yarn'
+
+      - name: Cache node_modules
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('yarn.lock', 'patches/**') }}
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Derive the rnllama variant allowlist from the payload manifest
+        run: |
+          set -euo pipefail
+          VARIANTS=$(node scripts/verify-android-payload.js --print-variants)
+          echo "Declared allowlist: $VARIANTS"
+          echo "ORG_GRADLE_PROJECT_rnllamaVariants=$VARIANTS" >> "$GITHUB_ENV"
+
+      - name: Cache llama.rn native build tree
+        uses: actions/cache@v4
+        with:
+          path: node_modules/llama.rn/android/.cxx
+          key: ${{ runner.os }}-cxx-${{ hashFiles('yarn.lock', 'patches/**', 'scripts/android-payload-manifest.json') }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Set up the Hexagon SDK
+        uses: ./.github/actions/setup-hexagon-sdk
+
+      - name: Set up ccache
+        uses: ./.github/actions/setup-ccache
+
+      # Receta dummy verbatim de ci.yml (build-android). Este archivo está en
+      # .gitignore: lo crea el runner en cada build y nunca entra en el repo.
+      - name: Create dummy google-services.json for CI
+        run: |
+          cat > android/app/google-services.json << 'EOL'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "dummy-project-for-ci",
+              "storage_bucket": "dummy-project-for-ci.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                "android_client_info": {
+                  "package_name": "com.pocketpalai"
+                }
+              },
+              "api_key": [{
+                "current_key": "dummy-api-key-for-ci-builds"
+              }]
+            }]
+          }
+          EOL
+
+      # Receta dummy verbatim de ci.yml (build-android). También gitignoreado.
+      - name: Create dummy .env file for CI
+        run: |
+          cat > .env << 'EOL'
+          FIREBASE_FUNCTIONS_URL=https://dummy-firebase-url.com
+
+          # PalsHub/Supabase Configuration
+          SUPABASE_URL=https://dummy-supabase-url.supabase.co
+          SUPABASE_ANON_KEY=dummy-anon-key-for-ci-builds
+          PALSHUB_API_BASE_URL=https://dummy-palshub-api.com
+
+          # App Configuration
+          APP_URL=pocketpal://app
+
+          # Feature Flags (true/false)
+          ENABLE_PALSHUB_INTEGRATION=true
+          ENABLE_AUTHENTICATION=true
+          ENABLE_OFFLINE_MODE=true
+
+          # Google Sign-In Configuration
+          GOOGLE_IOS_CLIENT_ID=dummy-ios-client-id.apps.googleusercontent.com
+          GOOGLE_WEB_CLIENT_ID=dummy-web-client-id.apps.googleusercontent.com
+          EOL
+
+      # Sin keystore release ni contraseñas A PROPÓSITO: el build firma con
+      # la clave debug (fallback de android/app/build.gradle) y el APK final
+      # se re-firma en local con apksigner + el keystore del propietario.
+      - name: Build Android Release
+        working-directory: android
+        run: |
+          set -euo pipefail
+          if [ "${ORG_GRADLE_PROJECT_rnllamaBuildFromSource:-}" != "true" ]; then
+            echo "::error::ORG_GRADLE_PROJECT_rnllamaBuildFromSource is '${ORG_GRADLE_PROJECT_rnllamaBuildFromSource:-<unset>}', expected 'true'."
+            exit 1
+          fi
+          if [ "${PLUS_STORE_GATE:-}" = "true" ]; then
+            echo "::error::PLUS_STORE_GATE=true: este build personal debe salir SIN la puerta de pago de Plus."
+            exit 1
+          fi
+          ./gradlew assembleProdRelease 2>&1 | tee android-build.log
+
+      - name: ccache statistics
+        if: always()
+        run: ccache --show-stats || echo "ccache unavailable (its setup step did not complete)"
+
+      # Verificaciones heredadas de ci.yml: prueban que el APK es el build
+      # prod real y que la puerta de Plus quedó apagada.
+      - name: Verify the variant allowlist reached the llama.rn build
+        run: |
+          set -euo pipefail
+          VARIANTS=$(node scripts/verify-android-payload.js --print-variants)
+          if ! grep -qF "Building rnllama variants: $VARIANTS" android/android-build.log; then
+            echo "::error::llama.rn did not report building the declared variant set."
+            echo "Expected: $VARIANTS"
+            echo "In the build log:"
+            grep -F "rnllama variants" android/android-build.log || echo "  (no such line at all)"
+            exit 1
+          fi
+          echo "OK: llama.rn reported the declared variant list."
+
+      - name: Verify the Android payload
+        run: |
+          node scripts/verify-android-payload.js \
+            --apk android/app/build/outputs/apk/prod/release/app-prod-release.apk \
+            --report payload-report.txt
+
+      - name: Upload payload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payload-report
+          path: payload-report.txt
+          if-no-files-found: ignore
+
+      - name: Verify prod APK has no automation-bridge code (DCE sanity check)
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/prod/release/app-prod-release.apk
+          echo "Checking bundle inside $APK for E2E markers..."
+          WORK=$(mktemp -d)
+          unzip -p "$APK" assets/index.android.bundle > "$WORK/bundle" || {
+            echo "FAIL: could not extract assets/index.android.bundle from APK"
+            exit 1
+          }
+          MARKERS=(
+            'AUTOMATION_BRIDGE'
+            'memory-snapshot-label'
+            'memory-snapshot-result'
+            'BENCH_RUN_MATRIX'
+            'bench-runner-screen-status'
+            'ASR_AUTOMATION_STATE'
+            'VOICE_AUTOMATION_STATE'
+            'IAP_API_BASE_OVERRIDE'
+            'IAP_FAKE_STORE'
+            'PLUS_SHIP_OVERRIDE'
+            'PLUS_GATE_PROBE'
+          )
+          FAIL=0
+          for m in "${MARKERS[@]}"; do
+            if grep -q -F "$m" "$WORK/bundle"; then
+              echo "FAIL: prod bundle contains automation marker: $m"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "The automation bridge was not DCE-stripped from the prod build."
+            echo "Check that __E2E__ is being replaced at build time by babel-plugin-transform-define."
+            exit 1
+          fi
+          echo "OK: prod bundle contains zero automation markers."
+
+      - name: Verify the Plus store gate is OFF
+        run: scripts/verify-plus-gate.sh android/app/build/outputs/apk/prod/release/app-prod-release.apk --ungated
+
+      - name: Upload Mi IA Voz APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mi-ia-voz-apk
+          path: android/app/build/outputs/apk/prod/release/app-prod-release.apk
+          retention-days: 30

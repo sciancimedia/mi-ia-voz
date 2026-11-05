@@ -112,3 +112,10 @@ android/android-build.log
 # screenshot inventories). Live in the dev-team repo and are sometimes
 # synced into the worktree for local reference; never committed here.
 workflows/
+# Excepción a la regla "workflows/" de arriba: esa regla es para los
+# artefactos del dev-team, pero su patrón también atrapa .github/workflows/
+# para archivos NUEVOS (los 4 oficiales ya están trackeados y no les afecta).
+# Sin esta excepción, el workflow personal build-mi-ia-voz.yml no se podría
+# subir al repo y GitHub Actions nunca lo vería.
+!.github/workflows/
+!.github/workflows/*
