@@ -18,7 +18,9 @@
 
 import {v4 as uuidv4} from 'uuid';
 import {makeAutoObservable, runInAction} from 'mobx';
+import {Platform} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as RNFS from '@dr.pogodin/react-native-fs';
 
 import {HF_DOMAIN} from '../config/urls';
 
@@ -52,6 +54,27 @@ import {downloadPalThumbnail, deletePalThumbnail} from '../utils/imageUtils';
 // (check key, find existing, create, set key) instead of a third copy.
 const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
 const PIP_SEEDED_KEY = 'PalStore.builtin.Pip.seeded';
+const LORENZO_SEEDED_KEY = 'PalStore.builtin.Lorenzo.seeded';
+const LORENZO_PAL_ID_KEY = 'PalStore.builtin.Lorenzo.palId';
+
+// Lorenzo's system prompt, verbatim from Salvador's kit
+// (~/workspace/mi-ia/kit-mejora.md, «Pal 2 — Lorenzo»). Do not paraphrase:
+// the "REGLA MADRE" (short, precise answers) is his explicit requirement.
+const LORENZO_SYSTEM_PROMPT = `Eres Lorenzo, el asistente personal de Salvador en su teléfono: un mayordomo digital sereno, formal y eficiente. Es un estilo de trato, no la imitación de ninguna persona ni personaje concreto. Tu avatar es Puerquísimo Chancho.
+
+REGLA MADRE (pedida por Salvador el 2026-11-05): respuestas CORTAS y PRECISAS. A veces das información de más y él no la necesita. Di solo lo que necesita en ese momento, sin rodeos ni explicaciones largas. Si quiere más detalle, él lo pedirá.
+
+REGLAS:
+1. IDIOMA AUTOMÁTICO (pedido por Salvador el 2026-11-05): responde SIEMPRE en el mismo idioma en que él te hable — si te habla en español, responde en español; si te habla en italiano, responde en italiano; si te habla en inglés, responde en inglés. Son los tres idiomas que le interesan. Si el idioma no está claro o viene mezclado, responde en español. El trato: de usted ligero, cortés y cercano, sin exagerar (en el idioma que toque).
+2. Llama a tu usuario «Salvador» al saludar y al cerrar asuntos importantes, no en cada frase.
+3. Ve al punto en la primera frase. Nada de relleno, nada de discursos: máximo 2 o 3 frases por respuesta salvo que él pida más.
+4. Cuando des información: primero lo importante; el detalle solo si él lo pide.
+5. Al terminar, ofrece como máximo UN siguiente paso concreto en una pregunta corta.
+6. Si algo no lo sabes o no puedes hacerlo, dilo de frente y en una línea, y propón la alternativa más cercana.
+7. Tono sereno siempre: ni alarmista ni adulador. Eficacia tranquila.
+8. Tus respuestas se escuchan en voz alta: frases cortas, sin listas largas ni símbolos raros.
+
+Saluda así la primera vez: «A su servicio, Salvador. ¿En qué puedo ayudarle?»`;
 
 interface CreatorUpdateContext {
   fresh: Pal;
@@ -118,6 +141,11 @@ class PalStore {
   // Core pals storage
   pals: Pal[] = [];
 
+  // Id of the built-in "Lorenzo" pal (Cianci AI fork), resolved at startup
+  // by initializeLorenzoPal. Null until seeded/found. The chat avatar uses
+  // it to recognise Lorenzo's sessions even if the pal gets renamed.
+  builtinLorenzoPalId: string | null = null;
+
   // PalsHub integration state
   cachedPalsHubPals: PalsHubPal[] = [];
   userLibrary: PalsHubPal[] = [];
@@ -161,6 +189,9 @@ class PalStore {
 
       // Initialize Pip pal (idempotent — see initializePipPal).
       await this.initializePipPal();
+
+      // Initialize Lorenzo pal (idempotent — see initializeLorenzoPal).
+      await this.initializeLorenzoPal();
 
       // Register talent engines (idempotent)
       registerDefaultTalents();
@@ -904,6 +935,102 @@ class PalStore {
       await AsyncStorage.setItem(PIP_SEEDED_KEY, 'true');
     } catch (error) {
       console.error('Error initializing Pip pal:', error);
+    }
+  }
+
+  /**
+   * Seed the built-in "Lorenzo" pal once (Cianci AI fork): Salvador's
+   * personal assistant — Spanish-speaking and deliberately brief, with
+   * Puerquísimo Chancho as his avatar.
+   *
+   * Same seed-once semantics as Pip: after the first launch that records
+   * the seed, deletions and renames are preserved. A pre-existing local
+   * pal named "Lorenzo" (e.g. created by hand from Salvador's kit) is
+   * adopted as the built-in instead of duplicated. The pal's id is kept
+   * in AsyncStorage and in `builtinLorenzoPalId` so the chat avatar can
+   * recognise Lorenzo even after a rename.
+   */
+  private async initializeLorenzoPal(): Promise<void> {
+    try {
+      const storedId = await AsyncStorage.getItem(LORENZO_PAL_ID_KEY);
+      if (storedId) {
+        if (this.pals.some(p => p.id === storedId)) {
+          runInAction(() => {
+            this.builtinLorenzoPalId = storedId;
+          });
+        }
+        // Seeded before; a missing record means Salvador deleted him.
+        return;
+      }
+
+      const existing = this.pals.find(
+        p => p.name === 'Lorenzo' && p.source === 'local',
+      );
+      if (existing) {
+        runInAction(() => {
+          this.builtinLorenzoPalId = existing.id;
+        });
+        await AsyncStorage.setItem(LORENZO_PAL_ID_KEY, existing.id);
+        await AsyncStorage.setItem(LORENZO_SEEDED_KEY, 'true');
+        return;
+      }
+
+      if ((await AsyncStorage.getItem(LORENZO_SEEDED_KEY)) === 'true') {
+        return;
+      }
+
+      const palData: Omit<Pal, 'id' | 'created_at' | 'updated_at'> = {
+        type: 'local',
+        name: 'Lorenzo',
+        description:
+          'Tu asistente personal: sereno, preciso y breve. Habla español y dice solo lo que necesitas.',
+        systemPrompt: LORENZO_SYSTEM_PROMPT,
+        isSystemPromptChanged: false,
+        useAIPrompt: false,
+        defaultModel: undefined,
+        parameters: {},
+        parameterSchema: [],
+        capabilities: {},
+        color: ['#6D071A', '#FADADD'],
+        greeting: {
+          text: 'A su servicio, Salvador. ¿En qué puedo ayudarle?',
+        },
+        source: 'local',
+      };
+
+      const savedPal = await this.addPal(palData);
+      runInAction(() => {
+        this.builtinLorenzoPalId = savedPal.id;
+      });
+      await AsyncStorage.setItem(LORENZO_PAL_ID_KEY, savedPal.id);
+      await AsyncStorage.setItem(LORENZO_SEEDED_KEY, 'true');
+
+      // Best effort: give Lorenzo his Puerquísimo face on the pal card.
+      // The image ships inside the app (Android assets); the chat avatar
+      // uses the bundled copy and does not depend on this file.
+      await this.seedLorenzoThumbnail(savedPal.id);
+    } catch (error) {
+      console.error('Error initializing Lorenzo pal:', error);
+    }
+  }
+
+  private async seedLorenzoThumbnail(palId: string): Promise<void> {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+    try {
+      const filename = `${palId}_thumbnail.jpg`;
+      const dir = `${RNFS.DocumentDirectoryPath}/pal-images`;
+      const dest = `${dir}/${filename}`;
+      if (!(await RNFS.exists(dir))) {
+        await RNFS.mkdir(dir);
+      }
+      if (!(await RNFS.exists(dest))) {
+        await RNFS.copyFileAssets('lorenzo/puerquisimo.jpg', dest);
+      }
+      await this.updatePal(palId, {thumbnail_url: filename});
+    } catch (error) {
+      console.error('Error seeding Lorenzo thumbnail:', error);
     }
   }
 }
