@@ -3,6 +3,7 @@ import {Image, StyleSheet, Text, View} from 'react-native';
 
 import {MessageType, Theme} from '../../utils/types';
 import {getUserAvatarNameColor, getUserInitials} from '../../utils';
+import {LorenzoAvatar} from './LorenzoAvatar';
 
 // TDOD: Add model name and the user's name?
 export const Avatar = React.memo(
@@ -12,12 +13,15 @@ export const Avatar = React.memo(
     showAvatar,
     showUserAvatars,
     theme,
+    useLorenzoAvatar,
   }: {
     author: MessageType.Any['author'];
     currentUserIsAuthor: boolean;
     showAvatar: boolean;
     showUserAvatars?: boolean;
     theme: Theme;
+    /** Cianci AI fork: render the animated Puerquísimo avatar (Lorenzo). */
+    useLorenzoAvatar?: boolean;
   }) => {
     const renderAvatar = () => {
       const color = getUserAvatarNameColor(
@@ -25,6 +29,10 @@ export const Avatar = React.memo(
         theme.colors.userAvatarNameColors,
       );
       const initials = getUserInitials(author);
+
+      if (useLorenzoAvatar) {
+        return <LorenzoAvatar />;
+      }
 
       if (author.imageUrl) {
         return (

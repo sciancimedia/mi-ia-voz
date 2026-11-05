@@ -48,6 +48,12 @@ export interface MessageTopLevelProps extends TextMessageTopLevelProps {
    * "preparing tool" copy.
    */
   isGeneratingToolCall?: boolean;
+  /**
+   * Cianci AI fork: the active pal is the built-in Lorenzo pal, whose
+   * messages show the animated Puerquísimo avatar instead of initials.
+   * Computed at the ChatView level and threaded through.
+   */
+  useLorenzoAvatar?: boolean;
   /** Called when user makes a long press on any message */
   onMessageLongPress?: (message: MessageType.Any, event?: any) => void;
   /** Called when user taps on any message */
@@ -128,6 +134,7 @@ export const Message = observer(
     showStatus,
     showUserAvatars,
     usePreviewData,
+    useLorenzoAvatar,
   }: MessageProps) => {
     const user = React.useContext(UserContext);
     const theme = useTheme();
@@ -424,6 +431,7 @@ export const Message = observer(
             showAvatar,
             showUserAvatars,
             theme,
+            useLorenzoAvatar: useLorenzoAvatar && !currentUserIsAuthor,
           }}
         />
         <Pressable

@@ -56,6 +56,7 @@ import {
   asrStore,
   chatSessionStore,
   modelStore,
+  palStore,
   voiceModeStore,
 } from '../../store';
 import type {UndoneSend} from '../../hooks/useChatSession';
@@ -921,11 +922,18 @@ export const ChatView = observer(
           message.type !== 'dateHeader' &&
           message.id === newestMessageId;
 
+        // Cianci AI fork: Lorenzo's messages carry his animated avatar.
+        const useLorenzoAvatar =
+          !!activePal &&
+          palStore.builtinLorenzoPalId !== null &&
+          activePal.id === palStore.builtinLorenzoPalId;
+
         return (
           <View>
             <Message
               {...{
                 enableAnimation,
+                useLorenzoAvatar,
                 isActiveRun,
                 activeRunPendingTalentNames: isActiveRun
                   ? activeRunPendingTalentNames
@@ -972,6 +980,7 @@ export const ChatView = observer(
         newestMessageId,
         activeRunPendingTalentNames,
         isGeneratingToolCall,
+        activePal,
       ],
     );
 
